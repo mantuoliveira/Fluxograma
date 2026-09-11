@@ -8,8 +8,8 @@
   const palette = $("#palette");
   const historyPanel = $(".history");
   const historyResize = $("#historyResize");
-  const typeNames = { start: "INÍCIO", assignment: "ATRIBUIÇÃO", decision: "DECISÃO", end: "FIM" };
-  const defaults = { start: "INÍCIO", assignment: "x <- 0", decision: "x < 10", end: "FIM" };
+  const typeNames = { start: "INÍCIO", assignment: "AÇÃO", call: "CHAMADA", decision: "DECISÃO", end: "FIM" };
+  const defaults = { start: "INÍCIO", assignment: "x <- 0", call: "Subfluxo", decision: "x < 10", end: "FIM" };
   const GRID_SIZE = 22;
   const sides = ["top", "right", "bottom", "left"];
   const sideNames = { top: "cima", right: "direita", bottom: "baixo", left: "esquerda" };
@@ -36,7 +36,7 @@
   }
 
   function freshRun() {
-    return { currentId: null, variables: {}, history: [], ended: false, lastConnection: null };
+    return { currentId: null, variables: {}, history: [], returnStack: [], ended: false, lastConnection: null };
   }
 
   function makeId() {
@@ -90,13 +90,45 @@
     return String(source).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   }
 
+  function parseAssignment(line, index) {
+    const match = line.match(/^([A-Za-z_]\w*)(?:\s*\[\s*(.+?)\s*\])?\s*<-\s*(.+)$/);
+    if (!match) throw new Error(`Linha ${index + 1}: use variável <- expressão ou lista[índice] <- expressão.`);
+    return { name: match[1], indexSource: match[2], valueSource: match[3] };
+  }
+
+  function validateListIndex(value) {
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      throw new Error("O índice da lista precisa ser um número inteiro maior ou igual a zero.");
+    }
+    return value;
+  }
+
+  function snapshotVariables(variables) {
+    return Object.fromEntries(Object.entries(variables).map(([name, value]) => [name, Array.isArray(value) ? value.slice() : value]));
+  }
+
   function blockDimensions(blockOrType) {
     const type = typeof blockOrType === "string" ? blockOrType : blockOrType.type;
+    const hasContent = typeof blockOrType !== "string";
     const lineCount = type === "assignment" && typeof blockOrType !== "string"
       ? Math.max(1, assignmentLines(blockOrType.code).length)
       : 1;
+    const longestLine = ["assignment", "decision"].includes(type) && hasContent
+      ? Math.max(1, ...String(blockOrType.code).split(/\r?\n/).map((line) => line.length))
+      : 1;
+    let columns = type === "assignment"
+      ? Math.max(8, Math.ceil((longestLine * 8 + 48) / GRID_SIZE))
+      : type === "decision" ? Math.max(8, Math.ceil((longestLine * 8 + 88) / GRID_SIZE)) : 8;
+    if (["assignment", "decision"].includes(type) && columns % 2) columns += 1;
     const rows = type === "decision" ? 5 : type === "assignment" ? Math.max(3, lineCount + 2) : 3;
-    return { width: GRID_SIZE * 8, height: GRID_SIZE * rows };
+    return { width: GRID_SIZE * columns, height: GRID_SIZE * rows };
+  }
+
+  function normalizeDynamicBlockLayout(block) {
+    const width = blockDimensions(block).width;
+    const previousWidth = Number.isFinite(block.layoutWidth) ? block.layoutWidth : GRID_SIZE * 8;
+    if (width !== previousWidth) block.x = snap(block.x - (width - previousWidth) / 2, 0);
+    block.layoutWidth = width;
   }
 
   function findFreeBlockPosition(type) {
@@ -129,10 +161,6 @@
   }
 
   function addBlock(type, x, y, code = defaults[type]) {
-    if (type === "start" && state.blocks.some((block) => block.type === "start")) {
-      toast("O fluxograma pode ter apenas um bloco Início.");
-      return;
-    }
     const position = Number.isFinite(x) && Number.isFinite(y)
       ? { x: snap(x, GRID_SIZE), y: snap(y, GRID_SIZE) }
       : findFreeBlockPosition(type);
@@ -159,10 +187,8 @@
     if (!code) throw new Error("O bloco precisa ter um texto.");
     if (block.type === "assignment") {
       const lines = assignmentLines(code);
-      if (!lines.length) throw new Error("O bloco precisa ter uma atribuição.");
-      lines.forEach((line, index) => {
-        if (!/^[A-Za-z_]\w*\s*<-\s*.+$/.test(line)) throw new Error(`Linha ${index + 1}: use variável <- expressão.`);
-      });
+      if (!lines.length) throw new Error("O bloco precisa ter uma ação.");
+      lines.forEach(parseAssignment);
       return lines.join("\n");
     }
     if (block.type === "decision") {
@@ -213,6 +239,7 @@
     $("#blockCount").textContent = state.blocks.length;
 
     state.blocks.filter((block) => block.type === "decision").forEach(normalizeDecisionSides);
+    state.blocks.filter((block) => ["assignment", "decision"].includes(block.type)).forEach(normalizeDynamicBlockLayout);
     syncDecisionConnections();
 
     state.blocks.forEach((block) => {
@@ -221,14 +248,21 @@
       el.dataset.id = block.id;
       el.style.left = `${block.x}px`;
       el.style.top = `${block.y}px`;
-      if (block.type === "assignment") el.style.height = `${blockDimensions(block).height}px`;
+      if (["assignment", "decision"].includes(block.type)) {
+        const dimensions = blockDimensions(block);
+        el.style.width = `${dimensions.width}px`;
+        el.style.height = `${dimensions.height}px`;
+      }
       el.setAttribute("role", "button");
       el.setAttribute("tabindex", "0");
       el.setAttribute("aria-label", `${typeNames[block.type]}: ${block.code}`);
       const editor = block.type === "assignment"
-        ? '<textarea class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar atribuições do bloco"></textarea>'
+        ? '<textarea class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar ações do bloco"></textarea>'
         : '<input class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar texto do bloco">';
-      el.innerHTML = `${block.type === "decision" ? '<span class="decision-surface" aria-hidden="true"></span>' : ""}${block.id === editingId ? editor : '<span class="block-code"></span>'}`;
+      const blockSurface = block.type === "decision"
+        ? '<span class="decision-surface" aria-hidden="true"></span>'
+        : block.type === "call" ? '<span class="call-bars" aria-hidden="true"></span>' : "";
+      el.innerHTML = `${blockSurface}${block.id === editingId ? editor : '<span class="block-code"></span>'}`;
       const content = el.querySelector(block.id === editingId ? ".inline-editor" : ".block-code");
       if (block.id === editingId) content.value = block.code;
       else content.textContent = block.code;
@@ -544,9 +578,17 @@
     render();
   }
 
+  function entryStart() {
+    const calledNames = new Set(state.blocks
+      .filter((block) => block.type === "call")
+      .map((block) => block.code.trim()));
+    const starts = state.blocks.filter((block) => block.type === "start");
+    return starts.find((block) => !calledNames.has(block.code.trim())) || starts[0] || null;
+  }
+
   function resetExecution(showMessage = true) {
     run = freshRun();
-    const start = state.blocks.find((block) => block.type === "start");
+    const start = entryStart();
     run.currentId = start ? start.id : null;
     $("#runBadge").textContent = "NÃO INICIADO";
     $("#runBadge").className = "run-badge";
@@ -567,7 +609,7 @@
       return;
     }
     if (!run.currentId) {
-      const start = state.blocks.find((block) => block.type === "start");
+      const start = entryStart();
       if (!start) return runError("Adicione um bloco Início.");
       run.currentId = start.id;
     }
@@ -577,31 +619,68 @@
     let branch = "next";
     let pathLabel = "—";
     const assignedVariables = [];
+    let callEntry = null;
+    let returnFrame = null;
     try {
       if (block.type === "assignment") {
         assignmentLines(block.code).forEach((line, index) => {
-          const match = line.match(/^([A-Za-z_]\w*)\s*<-\s*(.+)$/);
-          if (!match) throw new Error(`Linha ${index + 1}: use variável <- expressão.`);
-          const value = evaluate(match[2], run.variables, false);
-          if (typeof value !== "number") throw new Error(`Linha ${index + 1}: a atribuição precisa resultar em um número.`);
-          run.variables[match[1]] = value;
-          if (!assignedVariables.includes(match[1])) assignedVariables.push(match[1]);
+          const assignment = parseAssignment(line, index);
+          const value = evaluate(assignment.valueSource, run.variables, false);
+          if (typeof value !== "number") throw new Error(`Linha ${index + 1}: a ação precisa resultar em um número.`);
+          if (assignment.indexSource !== undefined) {
+            const listIndex = validateListIndex(evaluate(assignment.indexSource, run.variables, false));
+            const current = run.variables[assignment.name];
+            if (current !== undefined && !Array.isArray(current)) throw new Error(`A variável “${assignment.name}” não é uma lista.`);
+            const list = current || [];
+            list[listIndex] = value;
+            run.variables[assignment.name] = list;
+          } else {
+            run.variables[assignment.name] = value;
+          }
+          if (!assignedVariables.includes(assignment.name)) assignedVariables.push(assignment.name);
         });
       } else if (block.type === "decision") {
         const result = evaluate(block.code, run.variables, true);
         branch = result ? "true" : "false";
         pathLabel = result ? "Verdadeiro" : "Falso";
+      } else if (block.type === "call") {
+        const name = block.code.trim();
+        const matches = state.blocks.filter((item) => item.type === "start" && item.code.trim() === name);
+        if (!matches.length) throw new Error(`não existe um bloco Início chamado “${name}”.`);
+        if (matches.length > 1) throw new Error(`há mais de um bloco Início chamado “${name}”.`);
+        const connection = state.connections.find((item) => item.from === block.id && item.branch === "next");
+        if (!connection) throw new Error("conecte o bloco ao ponto para onde a execução deve retornar.");
+        const returnId = resolveConnectionTarget(connection);
+        if (!returnId) throw new Error("a conexão de retorno não leva a um bloco válido.");
+        const entryConnection = state.connections.find((item) => item.from === matches[0].id && item.branch === "next");
+        if (!entryConnection) throw new Error(`o Início “${name}” não está conectado ao primeiro bloco do subfluxo.`);
+        const entryId = resolveConnectionTarget(entryConnection);
+        if (!entryId) throw new Error(`a saída do Início “${name}” não leva a um bloco válido.`);
+        callEntry = { currentId: entryId, connection: entryConnection };
+        returnFrame = { currentId: returnId, connectionId: connection.id };
       }
     } catch (error) {
       return runError(`${typeNames[block.type]}: ${error.message}`);
     }
 
-    run.history.push({ step: run.history.length + 1, block: block.code, path: pathLabel, variables: { ...run.variables }, assignedVariables });
+    run.history.push({ step: run.history.length + 1, block: block.code, path: pathLabel, variables: snapshotVariables(run.variables), assignedVariables });
     if (block.type === "end") {
-      run.ended = true;
-      run.currentId = null;
-      run.lastConnection = null;
-      setRunStatus("CONCLUÍDO", "ended");
+      const frame = run.returnStack.pop();
+      if (frame) {
+        run.currentId = frame.currentId;
+        run.lastConnection = state.connections.find((item) => item.id === frame.connectionId) || null;
+        setRunStatus("EM EXECUÇÃO", "running");
+      } else {
+        run.ended = true;
+        run.currentId = null;
+        run.lastConnection = null;
+        setRunStatus("CONCLUÍDO", "ended");
+      }
+    } else if (block.type === "call") {
+      run.returnStack.push(returnFrame);
+      run.currentId = callEntry.currentId;
+      run.lastConnection = callEntry.connection;
+      setRunStatus("EM EXECUÇÃO", "running");
     } else {
       const expectedSide = block.type === "decision"
         ? branch === "true" ? block.trueSide : block.falseSide
@@ -645,7 +724,7 @@
     run.history.forEach((row) => Object.keys(row.variables).forEach((name) => {
       if (!variables.includes(name)) variables.push(name);
     }));
-    $("#historyHead").innerHTML = `<tr><th>Passo</th><th>Bloco executado</th>${variables.map((name) => `<th>${escapeHtml(name)}</th>`).join("")}</tr>`;
+    $("#historyHead").innerHTML = `<tr><th>Passo</th><th>Bloco executado</th>${variables.map((name) => `<th class="variable-heading">${escapeHtml(name)}</th>`).join("")}</tr>`;
     if (!run.history.length) {
       $("#historyBody").innerHTML = `<tr class="blank-row"><td colspan="${2 + variables.length}">Clique em <strong>Passo</strong> para iniciar a execução.</td></tr>`;
       return;
@@ -654,7 +733,7 @@
       const values = variables.map((name) => {
         const exists = Object.hasOwn(row.variables, name);
         const assigned = exists && row.assignedVariables?.includes(name);
-        return `<td>${assigned ? formatNumber(row.variables[name]) : ""}</td>`;
+        return `<td>${assigned ? formatHistoryValue(row.variables[name]) : ""}</td>`;
       }).join("");
       const decisionResult = row.path === "Verdadeiro"
         ? '<span class="decision-result true-result" aria-label="Verdadeiro">(V)</span>'
@@ -678,7 +757,7 @@
       if (number) { tokens.push({ type: "number", value: Number(number[0]) }); index += number[0].length; continue; }
       const name = rest.match(/^[A-Za-z_]\w*/);
       if (name) { tokens.push({ type: "name", value: name[0] }); index += name[0].length; continue; }
-      const op = rest.match(/^(<=|>=|!=|[+\-*/%<>=()])/);
+      const op = rest.match(/^(<=|>=|!=|[+\-*/%<>=()]|\[|\])/);
       if (op) { tokens.push({ type: "op", value: op[0] }); index += op[0].length; continue; }
       throw new Error(`Símbolo inválido: “${rest[0]}”.`);
     }
@@ -696,7 +775,17 @@
       if (token.type === "number") return token.value;
       if (token.type === "name") {
         if (!Object.hasOwn(variables, token.value)) throw new Error(`A variável “${token.value}” ainda não recebeu valor.`);
-        return variables[token.value];
+        const value = variables[token.value];
+        if (peek()?.value === "[") {
+          take();
+          const index = validateListIndex(sum());
+          if (!peek() || take().value !== "]") throw new Error("Falta fechar o índice da lista com ].");
+          if (!Array.isArray(value)) throw new Error(`A variável “${token.value}” não é uma lista.`);
+          if (!Object.hasOwn(value, index)) throw new Error(`A posição ${token.value}[${index}] ainda não recebeu valor.`);
+          return value[index];
+        }
+        if (Array.isArray(value)) throw new Error(`Use ${token.value}[índice] para acessar um elemento da lista.`);
+        return value;
       }
       if (token.value === "(") {
         const value = comparison();
@@ -743,7 +832,7 @@
   }
 
   function saveJson() {
-    const payload = JSON.stringify({ version: 2, title: "Fluxograma", blocks: state.blocks, connections: state.connections }, null, 2);
+    const payload = JSON.stringify({ version: 4, title: "Fluxograma", blocks: state.blocks, connections: state.connections }, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -786,15 +875,12 @@
   function validateFlow(data) {
     if (!data || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) throw new Error("arquivo JSON incompatível.");
     const ids = new Set();
-    let starts = 0;
     data.blocks.forEach((block) => {
       if (!block.id || ids.has(block.id) || !Object.hasOwn(typeNames, block.type) || typeof block.code !== "string" || !Number.isFinite(block.x) || !Number.isFinite(block.y)) throw new Error("há um bloco inválido.");
       if (block.trueSide !== undefined && !sides.includes(block.trueSide)) throw new Error("há uma saída de decisão inválida.");
       if (block.falseSide !== undefined && !sides.includes(block.falseSide)) throw new Error("há uma saída de decisão inválida.");
       ids.add(block.id);
-      if (block.type === "start") starts++;
     });
-    if (starts > 1) throw new Error("há mais de um bloco Início.");
     const connectionIds = new Set();
     data.connections.forEach((connection) => {
       if (connection.id && connectionIds.has(connection.id)) throw new Error("há identificadores de conexão repetidos.");
@@ -812,6 +898,20 @@
     return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
   }
   function formatNumber(value) { return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(8))); }
+  function formatList(value, start = 0) {
+    const entries = [];
+    for (let index = start; index < value.length; index += 1) {
+      entries.push(Object.hasOwn(value, index) ? formatNumber(value[index]) : "—");
+    }
+    return `[${entries.join(", ")}]`;
+  }
+  function formatHistoryValue(value) {
+    if (!Array.isArray(value)) return formatNumber(value);
+    const full = formatList(value);
+    const visible = value.length > 6 ? `[…, ${formatList(value, value.length - 6).slice(1)}` : full;
+    const label = `Lista completa: ${full}`;
+    return `<span class="list-value" title="${escapeHtml(label)}" aria-label="${escapeHtml(label)}">${escapeHtml(visible)}</span>`;
+  }
   function toast(message) {
     const node = $("#toast");
     node.textContent = message;
@@ -972,12 +1072,16 @@
     }
   });
   canvas.addEventListener("input", (event) => {
-    const editor = event.target.closest("textarea.inline-editor");
+    const editor = event.target.closest(".inline-editor");
     if (!editor) return;
-    const blockEl = editor.closest(".flow-block.assignment");
+    const blockEl = editor.closest(".flow-block.assignment, .flow-block.decision");
     if (!blockEl) return;
-    const lineCount = Math.max(1, editor.value.split(/\r?\n/).length);
-    blockEl.style.height = `${GRID_SIZE * Math.max(3, lineCount + 2)}px`;
+    const block = state.blocks.find((item) => item.id === blockEl.dataset.id);
+    const dimensions = blockDimensions({ type: block.type, code: editor.value });
+    const previousWidth = Number.isFinite(block?.layoutWidth) ? block.layoutWidth : GRID_SIZE * 8;
+    blockEl.style.left = `${snap((block?.x || 0) - (dimensions.width - previousWidth) / 2, 0)}px`;
+    blockEl.style.width = `${dimensions.width}px`;
+    blockEl.style.height = `${dimensions.height}px`;
     scheduleDrawConnections();
   });
   canvas.addEventListener("focusout", (event) => {
