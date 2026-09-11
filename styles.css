@@ -134,8 +134,10 @@ body.resizing-history .app-shell { transition: none; }
 .flow-block.current { filter: drop-shadow(0 0 7px rgba(80,217,172,.75)); }
 .flow-block.current::after { content: "PRÓXIMO"; position: absolute; top: -22px; left: 50%; transform: translateX(-50%); color: var(--mint-dark); font-size: .58rem; font-weight: 900; letter-spacing: .08em; }
 .block-code { position: relative; z-index: 1; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 750 .8rem/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.assignment .block-code { white-space: pre-line; text-overflow: clip; }
 .start .block-code, .end .block-code { font-family: inherit; letter-spacing: .06em; font-weight: 900; }
 .inline-editor { position: relative; z-index: 5; width: calc(100% - 8px); min-width: 0; height: 34px; padding: 5px 7px; border: 1px solid var(--blue); border-radius: 5px; background: rgba(255,255,255,.96); color: var(--ink); text-align: center; font: 750 .78rem/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; user-select: text; }
+.assignment textarea.inline-editor { height: calc(100% - 8px); min-height: 34px; resize: none; overflow: auto; white-space: pre; }
 .start .inline-editor, .end .inline-editor { font-family: inherit; font-weight: 900; letter-spacing: .04em; }
 .flow-block.editing { cursor: default; }
 .port { position: absolute; width: 14px; height: 14px; padding: 0; border-radius: 50%; border: 2px solid #fff; background: #6e8091; box-shadow: 0 0 0 1px #6e8091; opacity: 0; pointer-events: none; cursor: crosshair; z-index: 4; transition: opacity .12s ease, background .12s ease, box-shadow .12s ease; }
@@ -207,6 +209,12 @@ table { width: 100%; border-collapse: collapse; font-size: .76rem; }
 th { position: sticky; top: 0; background: #f0f3f5; color: #536271; font-size: .65rem; letter-spacing: .06em; text-transform: uppercase; z-index: 1; }
 th, td { min-width: 105px; height: 38px; padding: 7px 12px; text-align: left; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
 th:first-child, td:first-child { min-width: 66px; width: 66px; text-align: center; }
+td code { white-space: pre-line; }
+.history-block-cell { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.history-block-cell code { min-width: 0; }
+.decision-result { flex: 0 0 auto; font-weight: 900; }
+.decision-result.true-result { color: var(--mint-dark); }
+.decision-result.false-result { color: #b43c49; }
 tbody tr:last-child { background: #f1fcf8; }
 .blank-row td { color: var(--muted); text-align: center !important; height: 140px; }
 

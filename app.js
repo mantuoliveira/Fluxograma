@@ -86,8 +86,17 @@
     setTimeout(scheduleDrawConnections, 250);
   }
 
-  function blockDimensions(type) {
-    return { width: GRID_SIZE * 8, height: GRID_SIZE * (type === "decision" ? 5 : 3) };
+  function assignmentLines(source) {
+    return String(source).split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  }
+
+  function blockDimensions(blockOrType) {
+    const type = typeof blockOrType === "string" ? blockOrType : blockOrType.type;
+    const lineCount = type === "assignment" && typeof blockOrType !== "string"
+      ? Math.max(1, assignmentLines(blockOrType.code).length)
+      : 1;
+    const rows = type === "decision" ? 5 : type === "assignment" ? Math.max(3, lineCount + 2) : 3;
+    return { width: GRID_SIZE * 8, height: GRID_SIZE * rows };
   }
 
   function findFreeBlockPosition(type) {
@@ -106,7 +115,7 @@
         y: start + Math.floor(index / columns) * rowStep
       };
       const occupied = state.blocks.some((block) => {
-        const existing = blockDimensions(block.type);
+        const existing = blockDimensions(block);
         return candidate.x < block.x + existing.width + gap
           && candidate.x + dimensions.width + gap > block.x
           && candidate.y < block.y + existing.height + gap
@@ -115,7 +124,7 @@
       if (!occupied) return candidate;
     }
 
-    const lowestEdge = state.blocks.reduce((edge, block) => Math.max(edge, block.y + blockDimensions(block.type).height), start);
+    const lowestEdge = state.blocks.reduce((edge, block) => Math.max(edge, block.y + blockDimensions(block).height), start);
     return { x: start, y: snap(lowestEdge + gap, GRID_SIZE) };
   }
 
@@ -148,7 +157,14 @@
   function validateBlockCode(block, value) {
     const code = value.trim();
     if (!code) throw new Error("O bloco precisa ter um texto.");
-    if (block.type === "assignment" && !/^\s*[A-Za-z_]\w*\s*<-\s*.+$/.test(code)) throw new Error("Use variável <- expressão.");
+    if (block.type === "assignment") {
+      const lines = assignmentLines(code);
+      if (!lines.length) throw new Error("O bloco precisa ter uma atribuição.");
+      lines.forEach((line, index) => {
+        if (!/^[A-Za-z_]\w*\s*<-\s*.+$/.test(line)) throw new Error(`Linha ${index + 1}: use variável <- expressão.`);
+      });
+      return lines.join("\n");
+    }
     if (block.type === "decision") {
       tokenize(code);
       if (!/(?:<=|>=|!=|[<>=])/.test(code)) throw new Error("A decisão precisa ter uma comparação.");
@@ -196,17 +212,23 @@
     $("#emptyState").hidden = state.blocks.length > 0;
     $("#blockCount").textContent = state.blocks.length;
 
+    state.blocks.filter((block) => block.type === "decision").forEach(normalizeDecisionSides);
+    syncDecisionConnections();
+
     state.blocks.forEach((block) => {
-      if (block.type === "decision") normalizeDecisionSides(block);
       const el = document.createElement("div");
       el.className = `flow-block ${block.type}${block.id === selectedId ? " selected" : ""}${block.id === run.currentId ? " current" : ""}${block.id === editingId ? " editing" : ""}`;
       el.dataset.id = block.id;
       el.style.left = `${block.x}px`;
       el.style.top = `${block.y}px`;
+      if (block.type === "assignment") el.style.height = `${blockDimensions(block).height}px`;
       el.setAttribute("role", "button");
       el.setAttribute("tabindex", "0");
       el.setAttribute("aria-label", `${typeNames[block.type]}: ${block.code}`);
-      el.innerHTML = `${block.type === "decision" ? '<span class="decision-surface" aria-hidden="true"></span>' : ""}${block.id === editingId ? '<input class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar texto do bloco">' : '<span class="block-code"></span>'}`;
+      const editor = block.type === "assignment"
+        ? '<textarea class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar atribuições do bloco"></textarea>'
+        : '<input class="inline-editor" autocomplete="off" spellcheck="false" aria-label="Editar texto do bloco">';
+      el.innerHTML = `${block.type === "decision" ? '<span class="decision-surface" aria-hidden="true"></span>' : ""}${block.id === editingId ? editor : '<span class="block-code"></span>'}`;
       const content = el.querySelector(block.id === editingId ? ".inline-editor" : ".block-code");
       if (block.id === editingId) content.value = block.code;
       else content.textContent = block.code;
@@ -246,6 +268,18 @@
     block.trueSide = sides.includes(block.trueSide) ? block.trueSide : "right";
     block.falseSide = sides.includes(block.falseSide) ? block.falseSide : "left";
     if (block.trueSide === block.falseSide) block.falseSide = block.trueSide === "left" ? "right" : "left";
+  }
+
+  function syncDecisionConnections() {
+    const decisions = new Map(state.blocks.filter((block) => block.type === "decision").map((block) => [block.id, block]));
+    state.connections.forEach((connection) => {
+      const block = decisions.get(connection.from);
+      if (!block) return;
+      if (connection.fromSide === block.trueSide) connection.branch = "true";
+      else if (connection.fromSide === block.falseSide) connection.branch = "false";
+      else if (connection.branch === "true") connection.fromSide = block.trueSide;
+      else if (connection.branch === "false") connection.fromSide = block.falseSide;
+    });
   }
 
   function portPoint(block, side) {
@@ -542,13 +576,17 @@
 
     let branch = "next";
     let pathLabel = "—";
+    const assignedVariables = [];
     try {
       if (block.type === "assignment") {
-        const match = block.code.match(/^\s*([A-Za-z_]\w*)\s*<-\s*(.+)$/);
-        if (!match) throw new Error("Use o formato variável <- expressão.");
-        const value = evaluate(match[2], run.variables, false);
-        if (typeof value !== "number") throw new Error("Uma atribuição precisa resultar em um número.");
-        run.variables[match[1]] = value;
+        assignmentLines(block.code).forEach((line, index) => {
+          const match = line.match(/^([A-Za-z_]\w*)\s*<-\s*(.+)$/);
+          if (!match) throw new Error(`Linha ${index + 1}: use variável <- expressão.`);
+          const value = evaluate(match[2], run.variables, false);
+          if (typeof value !== "number") throw new Error(`Linha ${index + 1}: a atribuição precisa resultar em um número.`);
+          run.variables[match[1]] = value;
+          if (!assignedVariables.includes(match[1])) assignedVariables.push(match[1]);
+        });
       } else if (block.type === "decision") {
         const result = evaluate(block.code, run.variables, true);
         branch = result ? "true" : "false";
@@ -558,14 +596,19 @@
       return runError(`${typeNames[block.type]}: ${error.message}`);
     }
 
-    run.history.push({ step: run.history.length + 1, block: block.code, path: pathLabel, variables: { ...run.variables } });
+    run.history.push({ step: run.history.length + 1, block: block.code, path: pathLabel, variables: { ...run.variables }, assignedVariables });
     if (block.type === "end") {
       run.ended = true;
       run.currentId = null;
       run.lastConnection = null;
       setRunStatus("CONCLUÍDO", "ended");
     } else {
-      const connection = state.connections.find((item) => item.from === block.id && item.branch === branch);
+      const expectedSide = block.type === "decision"
+        ? branch === "true" ? block.trueSide : block.falseSide
+        : null;
+      const connection = state.connections.find((item) => item.from === block.id && (
+        block.type === "decision" ? item.fromSide === expectedSide : item.branch === branch
+      ));
       if (!connection) {
         renderHistory();
         render();
@@ -607,7 +650,19 @@
       $("#historyBody").innerHTML = `<tr class="blank-row"><td colspan="${2 + variables.length}">Clique em <strong>Passo</strong> para iniciar a execução.</td></tr>`;
       return;
     }
-    $("#historyBody").innerHTML = run.history.map((row) => `<tr><td>${row.step}</td><td><code>${escapeHtml(row.block)}</code></td>${variables.map((name) => `<td>${Object.hasOwn(row.variables, name) ? formatNumber(row.variables[name]) : "—"}</td>`).join("")}</tr>`).join("");
+    $("#historyBody").innerHTML = run.history.map((row) => {
+      const values = variables.map((name) => {
+        const exists = Object.hasOwn(row.variables, name);
+        const assigned = exists && row.assignedVariables?.includes(name);
+        return `<td>${assigned ? formatNumber(row.variables[name]) : ""}</td>`;
+      }).join("");
+      const decisionResult = row.path === "Verdadeiro"
+        ? '<span class="decision-result true-result" aria-label="Verdadeiro">(V)</span>'
+        : row.path === "Falso"
+          ? '<span class="decision-result false-result" aria-label="Falso">(F)</span>'
+          : "";
+      return `<tr><td>${row.step}</td><td><div class="history-block-cell"><code>${escapeHtml(row.block)}</code>${decisionResult}</div></td>${values}</tr>`;
+    }).join("");
     const wrap = $(".table-wrap");
     wrap.scrollTop = wrap.scrollHeight;
   }
@@ -907,9 +962,23 @@
     else render();
   });
   canvas.addEventListener("keydown", (event) => {
-    const input = event.target.closest(".inline-editor");
-    if (input && event.key === "Enter") { event.preventDefault(); finishInlineEdit(false); }
-    else if (input && event.key === "Escape") { event.preventDefault(); finishInlineEdit(true); }
+    const editor = event.target.closest(".inline-editor");
+    if (editor && event.key === "Enter" && !(editor.matches("textarea") && event.shiftKey)) {
+      event.preventDefault();
+      finishInlineEdit(false);
+    } else if (editor && event.key === "Escape") {
+      event.preventDefault();
+      finishInlineEdit(true);
+    }
+  });
+  canvas.addEventListener("input", (event) => {
+    const editor = event.target.closest("textarea.inline-editor");
+    if (!editor) return;
+    const blockEl = editor.closest(".flow-block.assignment");
+    if (!blockEl) return;
+    const lineCount = Math.max(1, editor.value.split(/\r?\n/).length);
+    blockEl.style.height = `${GRID_SIZE * Math.max(3, lineCount + 2)}px`;
+    scheduleDrawConnections();
   });
   canvas.addEventListener("focusout", (event) => {
     if (event.target.matches(".inline-editor")) setTimeout(() => {
@@ -917,7 +986,7 @@
     }, 0);
   });
   canvas.addEventListener("keydown", (event) => {
-    if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !event.target.matches("input")) { event.preventDefault(); removeSelected(); }
+    if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !event.target.matches(".inline-editor")) { event.preventDefault(); removeSelected(); }
   });
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape" && selectedId && !editingId) {
