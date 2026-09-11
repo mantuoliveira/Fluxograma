@@ -355,14 +355,25 @@
     const points = [a, exit];
     if (fromHorizontal === toHorizontal) {
       if (fromHorizontal) {
-        const middleX = snap((exit.x + entry.x) / 2);
+        const sameDirection = fromDirection.x === toDirection.x;
+        const destinationIsAhead = (entry.x - exit.x) * fromDirection.x >= 0;
+        const middleX = sameDirection
+          ? (fromDirection.x < 0 ? Math.min(exit.x, entry.x) : Math.max(exit.x, entry.x))
+          : destinationIsAhead ? snap((exit.x + entry.x) / 2) : exit.x;
         points.push({ x: middleX, y: exit.y }, { x: middleX, y: entry.y });
       } else {
-        const middleY = snap((exit.y + entry.y) / 2);
+        const sameDirection = fromDirection.y === toDirection.y;
+        const destinationIsAhead = (entry.y - exit.y) * fromDirection.y >= 0;
+        const middleY = sameDirection
+          ? (fromDirection.y < 0 ? Math.min(exit.y, entry.y) : Math.max(exit.y, entry.y))
+          : destinationIsAhead ? snap((exit.y + entry.y) / 2) : exit.y;
         points.push({ x: exit.x, y: middleY }, { x: entry.x, y: middleY });
       }
-    } else if (fromHorizontal) points.push({ x: entry.x, y: exit.y });
-    else points.push({ x: exit.x, y: entry.y });
+    } else if (fromHorizontal) {
+      points.push({ x: exit.x, y: entry.y });
+    } else {
+      points.push({ x: entry.x, y: exit.y });
+    }
     points.push(entry, b);
     return removeCollinearPoints(points);
   }
@@ -1093,6 +1104,13 @@
     if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !event.target.matches(".inline-editor")) { event.preventDefault(); removeSelected(); }
   });
   document.addEventListener("keydown", (event) => {
+    const target = event.target instanceof Element ? event.target : null;
+    const isEditing = target?.closest("input, textarea, [contenteditable='true'], .inline-editor");
+    if (event.key === "ArrowRight" && !event.defaultPrevented && !event.repeat && !event.altKey && !event.ctrlKey && !event.metaKey && !event.shiftKey && !isEditing) {
+      event.preventDefault();
+      step();
+      return;
+    }
     if (event.key === "Escape" && selectedId && !editingId) {
       selectBlock(null);
       render();
