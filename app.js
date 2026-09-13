@@ -17,10 +17,12 @@
 
   let state = { blocks: [], connections: [] };
   let selectedId = null;
+  let selectedConnectionId = null;
   let editingId = null;
   let editingOriginal = "";
   let pendingConnection = null;
   let drag = null;
+  let routeDrag = null;
   let panelResize = null;
   let run = freshRun();
   let idCounter = 1;
@@ -120,15 +122,21 @@
       ? Math.max(8, Math.ceil((longestLine * 8 + 48) / GRID_SIZE))
       : type === "decision" ? Math.max(8, Math.ceil((longestLine * 8 + 88) / GRID_SIZE)) : 8;
     if (["assignment", "decision"].includes(type) && columns % 2) columns += 1;
-    const rows = type === "decision" ? 5 : type === "assignment" ? Math.max(3, lineCount + 2) : 3;
+    let rows = type === "decision" ? 6 : type === "assignment" ? Math.max(4, lineCount + 2) : 4;
+    if (rows % 2) rows += 1;
     return { width: GRID_SIZE * columns, height: GRID_SIZE * rows };
   }
 
   function normalizeDynamicBlockLayout(block) {
-    const width = blockDimensions(block).width;
+    const dimensions = blockDimensions(block);
+    const width = dimensions.width;
+    const height = dimensions.height;
     const previousWidth = Number.isFinite(block.layoutWidth) ? block.layoutWidth : GRID_SIZE * 8;
+    const previousHeight = Number.isFinite(block.layoutHeight) ? block.layoutHeight : height;
     if (width !== previousWidth) block.x = snap(block.x - (width - previousWidth) / 2, 0);
+    if (height !== previousHeight) block.y = snap(block.y - (height - previousHeight) / 2, 0);
     block.layoutWidth = width;
+    block.layoutHeight = height;
   }
 
   function findFreeBlockPosition(type) {
@@ -178,6 +186,7 @@
 
   function selectBlock(id) {
     selectedId = id;
+    selectedConnectionId = null;
     const block = state.blocks.find((item) => item.id === id);
     $("#deleteSelected").disabled = !block;
   }
@@ -202,6 +211,7 @@
     const block = state.blocks.find((item) => item.id === id);
     if (!block) return;
     selectedId = id;
+    selectedConnectionId = null;
     editingId = id;
     editingOriginal = block.code;
     $("#deleteSelected").disabled = false;
@@ -345,80 +355,69 @@
     });
   }
 
-  function orthogonalPoints(a, fromSide, b, toSide) {
-    const fromDirection = sideDirections[fromSide];
-    const toDirection = sideDirections[toSide];
-    const exit = { x: a.x + fromDirection.x * GRID_SIZE, y: a.y + fromDirection.y * GRID_SIZE };
-    const entry = { x: b.x + toDirection.x * GRID_SIZE, y: b.y + toDirection.y * GRID_SIZE };
+  function defaultRouteControl(exit, fromDirection, entry, toDirection) {
     const fromHorizontal = fromDirection.x !== 0;
     const toHorizontal = toDirection.x !== 0;
-    const points = [a, exit];
-    if (fromHorizontal === toHorizontal) {
-      if (fromHorizontal) {
-        const sameDirection = fromDirection.x === toDirection.x;
-        const destinationIsAhead = (entry.x - exit.x) * fromDirection.x >= 0;
-        const middleX = sameDirection
+    const midpoint = (start, end) => snap((start + end) / 2);
+    if (fromHorizontal && toHorizontal) {
+      if (exit.y === entry.y) return { axis: "y", value: exit.y };
+      const sameDirection = fromDirection.x === toDirection.x;
+      const destinationIsAhead = (entry.x - exit.x) * fromDirection.x >= 0;
+      return {
+        axis: "x",
+        value: sameDirection
           ? (fromDirection.x < 0 ? Math.min(exit.x, entry.x) : Math.max(exit.x, entry.x))
-          : destinationIsAhead ? snap((exit.x + entry.x) / 2) : exit.x;
-        points.push({ x: middleX, y: exit.y }, { x: middleX, y: entry.y });
-      } else {
-        const sameDirection = fromDirection.y === toDirection.y;
-        const destinationIsAhead = (entry.y - exit.y) * fromDirection.y >= 0;
-        const middleY = sameDirection
+          : destinationIsAhead ? midpoint(exit.x, entry.x) : exit.x
+      };
+    }
+    if (!fromHorizontal && !toHorizontal) {
+      if (exit.x === entry.x) return { axis: "x", value: exit.x };
+      const sameDirection = fromDirection.y === toDirection.y;
+      const destinationIsAhead = (entry.y - exit.y) * fromDirection.y >= 0;
+      return {
+        axis: "y",
+        value: sameDirection
           ? (fromDirection.y < 0 ? Math.min(exit.y, entry.y) : Math.max(exit.y, entry.y))
-          : destinationIsAhead ? snap((exit.y + entry.y) / 2) : exit.y;
-        points.push({ x: exit.x, y: middleY }, { x: entry.x, y: middleY });
-      }
-    } else if (fromHorizontal) {
-      points.push({ x: exit.x, y: entry.y });
-    } else {
-      points.push({ x: entry.x, y: exit.y });
+          : destinationIsAhead ? midpoint(exit.y, entry.y) : exit.y
+      };
     }
-    points.push(entry, b);
-    return removeCollinearPoints(points);
+    return fromHorizontal ? { axis: "x", value: exit.x } : { axis: "y", value: exit.y };
   }
 
-  function roundedPath(points, radius = 7) {
-    if (points.length < 2) return "";
-    let path = `M ${points[0].x} ${points[0].y}`;
-    for (let index = 1; index < points.length - 1; index++) {
-      const before = points[index - 1];
-      const corner = points[index];
-      const after = points[index + 1];
-      const inLength = Math.hypot(corner.x - before.x, corner.y - before.y);
-      const outLength = Math.hypot(after.x - corner.x, after.y - corner.y);
-      const r = Math.min(radius, inLength / 2, outLength / 2);
-      const beforeCorner = { x: corner.x + (before.x - corner.x) * r / inLength, y: corner.y + (before.y - corner.y) * r / inLength };
-      const afterCorner = { x: corner.x + (after.x - corner.x) * r / outLength, y: corner.y + (after.y - corner.y) * r / outLength };
-      path += ` L ${beforeCorner.x} ${beforeCorner.y} Q ${corner.x} ${corner.y} ${afterCorner.x} ${afterCorner.y}`;
-    }
-    const last = points[points.length - 1];
-    return `${path} L ${last.x} ${last.y}`;
+  function routeStubLength(a, fromDirection, b, toDirection) {
+    const portsFaceEachOther = fromDirection.x === -toDirection.x && fromDirection.y === -toDirection.y;
+    if (!portsFaceEachOther) return GRID_SIZE;
+    const availableDistance = (b.x - a.x) * fromDirection.x + (b.y - a.y) * fromDirection.y;
+    if (availableDistance <= 0) return GRID_SIZE;
+    return availableDistance >= GRID_SIZE * 2 ? GRID_SIZE : 0;
   }
 
-  function junctionPoint(points) {
-    const segments = [];
-    let totalLength = 0;
-    for (let index = 0; index < points.length - 1; index++) {
-      const a = points[index];
-      const b = points[index + 1];
-      const length = Math.hypot(b.x - a.x, b.y - a.y);
-      if (!length) continue;
-      segments.push({ a, b, length });
-      totalLength += length;
-    }
-    let remaining = totalLength / 2;
-    for (const segment of segments) {
-      if (remaining <= segment.length) {
-        const ratio = remaining / segment.length;
-        return {
-          x: segment.a.x + (segment.b.x - segment.a.x) * ratio,
-          y: segment.a.y + (segment.b.y - segment.a.y) * ratio
-        };
-      }
-      remaining -= segment.length;
-    }
-    return points[0] || { x: 0, y: 0 };
+  function orthogonalGeometry(a, fromSide, b, toSide, savedControl) {
+    const fromDirection = sideDirections[fromSide];
+    const toDirection = sideDirections[toSide];
+    const stubLength = routeStubLength(a, fromDirection, b, toDirection);
+    const exit = { x: a.x + fromDirection.x * stubLength, y: a.y + fromDirection.y * stubLength };
+    const entry = { x: b.x + toDirection.x * stubLength, y: b.y + toDirection.y * stubLength };
+    const initialControl = defaultRouteControl(exit, fromDirection, entry, toDirection);
+    const control = savedControl
+      && savedControl.axis === initialControl.axis
+      && Number.isFinite(savedControl.value)
+      ? { axis: savedControl.axis, value: snap(savedControl.value) }
+      : initialControl;
+    const points = control.axis === "x"
+      ? [a, exit, { x: control.value, y: exit.y }, { x: control.value, y: entry.y }, entry, b]
+      : [a, exit, { x: exit.x, y: control.value }, { x: entry.x, y: control.value }, entry, b];
+    const junctionMidpoint = (start, end) => snap((start + end) / 2);
+    const junction = control.axis === "x"
+      ? { x: control.value, y: junctionMidpoint(exit.y, entry.y) }
+      : { x: junctionMidpoint(exit.x, entry.x), y: control.value };
+    const cleanPoints = removeCollinearPoints(points);
+    return {
+      points: cleanPoints,
+      path: cleanPoints.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "),
+      junction,
+      control
+    };
   }
 
   function sideFacing(point, target) {
@@ -450,8 +449,7 @@
       toSide = sides.includes(connection.toSide) ? connection.toSide : "top";
       b = portPoint(to, toSide);
     }
-    const points = orthogonalPoints(a, fromSide, b, toSide);
-    const geometry = { points, path: roundedPath(points), junction: junctionPoint(points) };
+    const geometry = orthogonalGeometry(a, fromSide, b, toSide, connection.routeControl);
     cache.set(connection.id, geometry);
     visiting.delete(connection.id);
     return geometry;
@@ -476,9 +474,15 @@
       const geometry = geometries.get(connection.id);
       if (!geometry) return;
       const active = run.lastConnection && run.lastConnection.from === connection.from && run.lastConnection.branch === connection.branch;
+      const selected = selectedConnectionId === connection.id;
+      const hitPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      hitPath.setAttribute("d", geometry.path);
+      hitPath.setAttribute("class", "connection-hit-path");
+      hitPath.dataset.connectionId = connection.id;
+      svg.appendChild(hitPath);
       const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
       path.setAttribute("d", geometry.path);
-      path.setAttribute("class", `connection-path${active ? " active-path" : ""}`);
+      path.setAttribute("class", `connection-path${active ? " active-path" : ""}${selected ? " selected-path" : ""}`);
       path.setAttribute("marker-end", active ? "url(#arrow-active)" : "url(#arrow)");
       svg.appendChild(path);
     });
@@ -487,12 +491,13 @@
       if (!geometry) return;
       const junction = document.createElement("button");
       junction.type = "button";
-      junction.className = "connection-junction";
+      junction.className = `connection-junction${selectedConnectionId === connection.id ? " selected" : ""}${routeDrag?.connectionId === connection.id ? " dragging" : ""}`;
       junction.dataset.connectionId = connection.id;
+      junction.dataset.controlAxis = geometry.control.axis;
       junction.style.left = `${geometry.junction.x}px`;
       junction.style.top = `${geometry.junction.y}px`;
-      junction.setAttribute("aria-label", "Junção da seta; aceita conexões de retorno");
-      junction.title = "Conectar retorno aqui";
+      junction.setAttribute("aria-label", "Controle da seta; arraste para ajustar ou use como junção");
+      junction.title = "Arraste para ajustar a seta";
       canvas.appendChild(junction);
     });
   }
@@ -507,6 +512,7 @@
       showBranchPicker(block, side, port);
       return;
     }
+    selectedConnectionId = null;
     pendingConnection = { from: id, branch: branch || "next", fromSide: side };
     canvas.classList.add("connecting");
     document.querySelectorAll(".port.connecting").forEach((item) => item.classList.remove("connecting"));
@@ -545,6 +551,7 @@
       });
     }
     state.connections = state.connections.filter((connection) => !removed.has(connection.id));
+    if (removed.has(selectedConnectionId)) selectedConnectionId = null;
   }
 
   function replaceOutgoing(connection) {
@@ -843,7 +850,8 @@
   }
 
   function saveJson() {
-    const payload = JSON.stringify({ version: 4, title: "Fluxograma", blocks: state.blocks, connections: state.connections }, null, 2);
+    const blocks = state.blocks.map(({ layoutWidth, layoutHeight, ...block }) => block);
+    const payload = JSON.stringify({ version: 5, title: "Fluxograma", blocks, connections: state.connections }, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -862,7 +870,8 @@
         validateFlow(data);
         state = {
           blocks: data.blocks.map((block) => {
-            const normalized = { ...block, x: snap(block.x, GRID_SIZE), y: snap(block.y, GRID_SIZE) };
+            const { layoutWidth, layoutHeight, ...savedBlock } = block;
+            const normalized = { ...savedBlock, x: snap(block.x, GRID_SIZE), y: snap(block.y, GRID_SIZE) };
             if (normalized.type === "decision") normalizeDecisionSides(normalized);
             return normalized;
           }),
@@ -870,7 +879,8 @@
             ...connection,
             id: connection.id || makeConnectionId(),
             fromSide: sides.includes(connection.fromSide) ? connection.fromSide : connection.branch === "true" ? "right" : connection.branch === "false" ? "left" : "bottom",
-            ...(connection.to ? { toSide: sides.includes(connection.toSide) ? connection.toSide : "top" } : {})
+            ...(connection.to ? { toSide: sides.includes(connection.toSide) ? connection.toSide : "top" } : {}),
+            ...(connection.routeControl ? { routeControl: { axis: connection.routeControl.axis, value: snap(connection.routeControl.value) } } : {})
           }))
         };
         selectedId = null;
@@ -902,6 +912,10 @@
       if (!ids.has(connection.from) || !validTarget || !["next", "true", "false"].includes(connection.branch)) throw new Error("há uma conexão inválida.");
       if (connection.fromSide !== undefined && !sides.includes(connection.fromSide)) throw new Error("há um lado de conexão inválido.");
       if (connection.toSide !== undefined && !sides.includes(connection.toSide)) throw new Error("há um lado de conexão inválido.");
+      if (connection.routeControl !== undefined
+        && (!connection.routeControl || !["x", "y"].includes(connection.routeControl.axis) || !Number.isFinite(connection.routeControl.value))) {
+        throw new Error("há um controle de seta inválido.");
+      }
     });
   }
 
@@ -992,6 +1006,7 @@
     if (state.blocks.length && !window.confirm("Criar um fluxograma vazio? O atual continuará disponível apenas se já tiver sido salvo.")) return;
     state = { blocks: [], connections: [] };
     selectedId = null;
+    selectedConnectionId = null;
     editingId = null;
     pendingConnection = null;
     selectBlock(null);
@@ -1006,15 +1021,38 @@
     const previousSide = block[key];
     if (block[otherKey] === newSide) block[otherKey] = previousSide;
     block[key] = newSide;
+    state.connections.filter((connection) => connection.from === block.id).forEach((connection) => { delete connection.routeControl; });
     resetExecution(false);
   }
 
   canvas.addEventListener("pointerdown", (event) => {
+    const connectionPath = event.target.closest(".connection-hit-path");
+    if (connectionPath) {
+      event.stopPropagation();
+      event.preventDefault();
+      if (!finishInlineEdit(false)) return;
+      pendingConnection = null;
+      selectedId = null;
+      selectedConnectionId = connectionPath.dataset.connectionId;
+      $("#deleteSelected").disabled = true;
+      scheduleDrawConnections();
+      return;
+    }
     const junction = event.target.closest(".connection-junction");
     if (junction) {
       event.stopPropagation();
       if (pendingConnection) completeConnectionToConnection(junction.dataset.connectionId);
-      else toast("Esta junção só recebe conexões; comece por um ponto do bloco.");
+      else {
+        const connection = state.connections.find((item) => item.id === junction.dataset.connectionId);
+        const axis = junction.dataset.controlAxis;
+        if (!connection || !["x", "y"].includes(axis)) return;
+        selectedId = null;
+        selectedConnectionId = connection.id;
+        $("#deleteSelected").disabled = true;
+        routeDrag = { connectionId: connection.id, pointerId: event.pointerId, axis };
+        document.body.classList.add("dragging-route");
+        event.preventDefault();
+      }
       return;
     }
     if (event.target.closest(".inline-editor")) return;
@@ -1072,7 +1110,42 @@
     if (!moved) startInlineEdit(id);
     else render();
   });
+  window.addEventListener("pointermove", (event) => {
+    if (!routeDrag || routeDrag.pointerId !== event.pointerId) return;
+    const connection = state.connections.find((item) => item.id === routeDrag.connectionId);
+    if (!connection) return;
+    const rect = canvas.getBoundingClientRect();
+    const localX = event.clientX - rect.left + canvas.scrollLeft;
+    const localY = event.clientY - rect.top + canvas.scrollTop;
+    const rawValue = routeDrag.axis === "x" ? localX : localY;
+    connection.routeControl = { axis: routeDrag.axis, value: snap(rawValue) };
+    scheduleDrawConnections();
+    event.preventDefault();
+  });
+  function finishRouteDrag(event) {
+    if (!routeDrag || routeDrag.pointerId !== event.pointerId) return;
+    routeDrag = null;
+    document.body.classList.remove("dragging-route");
+    scheduleDrawConnections();
+  }
+  window.addEventListener("pointerup", finishRouteDrag);
+  window.addEventListener("pointercancel", finishRouteDrag);
   canvas.addEventListener("keydown", (event) => {
+    const junction = event.target.closest(".connection-junction");
+    if (junction && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
+      const connection = state.connections.find((item) => item.id === junction.dataset.connectionId);
+      const geometry = connection ? connectionGeometry(connection, new Map()) : null;
+      const axis = geometry?.control.axis;
+      const delta = axis === "x"
+        ? (event.key === "ArrowLeft" ? -GRID_SIZE : event.key === "ArrowRight" ? GRID_SIZE : 0)
+        : (event.key === "ArrowUp" ? -GRID_SIZE : event.key === "ArrowDown" ? GRID_SIZE : 0);
+      if (connection && geometry && delta) {
+        connection.routeControl = { axis, value: geometry.control.value + delta };
+        event.preventDefault();
+        scheduleDrawConnections();
+      }
+      return;
+    }
     const editor = event.target.closest(".inline-editor");
     if (editor && event.key === "Enter" && !(editor.matches("textarea") && event.shiftKey)) {
       event.preventDefault();
@@ -1090,7 +1163,9 @@
     const block = state.blocks.find((item) => item.id === blockEl.dataset.id);
     const dimensions = blockDimensions({ type: block.type, code: editor.value });
     const previousWidth = Number.isFinite(block?.layoutWidth) ? block.layoutWidth : GRID_SIZE * 8;
+    const previousHeight = Number.isFinite(block?.layoutHeight) ? block.layoutHeight : blockDimensions(block).height;
     blockEl.style.left = `${snap((block?.x || 0) - (dimensions.width - previousWidth) / 2, 0)}px`;
+    blockEl.style.top = `${snap((block?.y || 0) - (dimensions.height - previousHeight) / 2, 0)}px`;
     blockEl.style.width = `${dimensions.width}px`;
     blockEl.style.height = `${dimensions.height}px`;
     scheduleDrawConnections();
@@ -1111,7 +1186,7 @@
       step();
       return;
     }
-    if (event.key === "Escape" && selectedId && !editingId) {
+    if (event.key === "Escape" && (selectedId || selectedConnectionId) && !editingId) {
       selectBlock(null);
       render();
     }
