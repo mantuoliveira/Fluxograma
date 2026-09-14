@@ -644,8 +644,8 @@
         assignmentLines(block.code).forEach((line, index) => {
           const assignment = parseAssignment(line, index);
           const value = evaluate(assignment.valueSource, run.variables, false);
-          if (typeof value !== "number") throw new Error(`Linha ${index + 1}: a ação precisa resultar em um número.`);
           if (assignment.indexSource !== undefined) {
+            if (typeof value !== "number") throw new Error(`Linha ${index + 1}: cada posição da lista precisa receber um número.`);
             const listIndex = validateListIndex(evaluate(assignment.indexSource, run.variables, false));
             const current = run.variables[assignment.name];
             if (current !== undefined && !Array.isArray(current)) throw new Error(`A variável “${assignment.name}” não é uma lista.`);
@@ -653,6 +653,7 @@
             list[listIndex] = value;
             run.variables[assignment.name] = list;
           } else {
+            if (typeof value !== "number" && !Array.isArray(value)) throw new Error(`Linha ${index + 1}: a ação precisa resultar em um número ou uma lista.`);
             run.variables[assignment.name] = value;
           }
           if (!assignedVariables.includes(assignment.name)) assignedVariables.push(assignment.name);
@@ -775,7 +776,7 @@
       if (number) { tokens.push({ type: "number", value: Number(number[0]) }); index += number[0].length; continue; }
       const name = rest.match(/^[A-Za-z_]\w*/);
       if (name) { tokens.push({ type: "name", value: name[0] }); index += name[0].length; continue; }
-      const op = rest.match(/^(<=|>=|!=|[+\-*/%<>=()]|\[|\])/);
+      const op = rest.match(/^(<=|>=|!=|[+\-*/%<>=(),]|\[|\])/);
       if (op) { tokens.push({ type: "op", value: op[0] }); index += op[0].length; continue; }
       throw new Error(`Símbolo inválido: “${rest[0]}”.`);
     }
@@ -791,6 +792,24 @@
       const token = take();
       if (!token) throw new Error("Expressão incompleta.");
       if (token.type === "number") return token.value;
+      if (token.value === "[") {
+        const values = [];
+        if (peek()?.value === "]") {
+          take();
+          return values;
+        }
+        while (true) {
+          const value = sum();
+          if (typeof value !== "number" || !Number.isFinite(value)) throw new Error("Cada item da lista precisa resultar em um número.");
+          values.push(value);
+          if (peek()?.value === "]") {
+            take();
+            return values;
+          }
+          if (!peek() || take().value !== ",") throw new Error("Separe os itens da lista com vírgulas e feche a lista com ].");
+          if (peek()?.value === "]") throw new Error("Não deixe uma vírgula no final da lista.");
+        }
+      }
       if (token.type === "name") {
         if (!Object.hasOwn(variables, token.value)) throw new Error(`A variável “${token.value}” ainda não recebeu valor.`);
         const value = variables[token.value];
@@ -813,7 +832,12 @@
       throw new Error("Era esperado um número, variável ou parênteses.");
     };
     const unary = () => {
-      if (peek() && ["+", "-"].includes(peek().value)) return take().value === "-" ? -unary() : unary();
+      if (peek() && ["+", "-"].includes(peek().value)) {
+        const op = take().value;
+        const value = unary();
+        if (typeof value !== "number") throw new Error("Listas não podem receber sinal positivo ou negativo.");
+        return op === "-" ? -value : value;
+      }
       return primary();
     };
     const product = () => {
@@ -821,6 +845,7 @@
       while (peek() && ["*", "/", "%"].includes(peek().value)) {
         const op = take().value;
         const right = unary();
+        if (typeof value !== "number" || typeof right !== "number") throw new Error("Listas não podem ser usadas em operações aritméticas.");
         if ((op === "/" || op === "%") && right === 0) throw new Error("Divisão por zero.");
         value = op === "*" ? value * right : op === "/" ? value / right : value % right;
       }
@@ -828,7 +853,12 @@
     };
     const sum = () => {
       let value = product();
-      while (peek() && ["+", "-"].includes(peek().value)) value = take().value === "+" ? value + product() : value - product();
+      while (peek() && ["+", "-"].includes(peek().value)) {
+        const op = take().value;
+        const right = product();
+        if (typeof value !== "number" || typeof right !== "number") throw new Error("Listas não podem ser usadas em operações aritméticas.");
+        value = op === "+" ? value + right : value - right;
+      }
       return value;
     };
     let compared = false;
@@ -838,6 +868,7 @@
         compared = true;
         const op = take().value;
         const right = sum();
+        if (typeof left !== "number" || typeof right !== "number") throw new Error("Listas não podem ser comparadas diretamente.");
         left = op === "<" ? left < right : op === "<=" ? left <= right : op === ">" ? left > right : op === ">=" ? left >= right : op === "=" ? left === right : left !== right;
       }
       return left;
@@ -845,7 +876,7 @@
     const result = comparison();
     if (at < tokens.length) throw new Error(`Trecho inesperado: “${tokens[at].value}”.`);
     if (requireComparison && !compared) throw new Error("A decisão precisa usar um operador de comparação.");
-    if (!Number.isFinite(result) && typeof result !== "boolean") throw new Error("O resultado não é um número válido.");
+    if (!Array.isArray(result) && !Number.isFinite(result) && typeof result !== "boolean") throw new Error("O resultado não é um número válido.");
     return result;
   }
 
