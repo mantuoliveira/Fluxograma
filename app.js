@@ -53,6 +53,11 @@
     return Math.max(minimum, Math.round(value / GRID_SIZE) * GRID_SIZE);
   }
 
+  function snapRouteControl(value) {
+    const step = GRID_SIZE / 2;
+    return Math.max(0, Math.round(value / step) * step);
+  }
+
   function maximumHistoryWidth() {
     if (window.innerWidth <= 800) return Math.max(250, window.innerWidth - 20);
     const paletteCollapsed = appShell.classList.contains("palette-collapsed");
@@ -275,7 +280,7 @@
       el.innerHTML = `${blockSurface}${block.id === editingId ? editor : '<span class="block-code"></span>'}`;
       const content = el.querySelector(block.id === editingId ? ".inline-editor" : ".block-code");
       if (block.id === editingId) content.value = block.code;
-      else content.textContent = block.code;
+      else content.textContent = displayCode(block.code);
 
       sides.forEach((side) => el.appendChild(makePort(block, side)));
       if (block.type === "decision") {
@@ -381,7 +386,7 @@
           : destinationIsAhead ? midpoint(exit.y, entry.y) : exit.y
       };
     }
-    return fromHorizontal ? { axis: "x", value: exit.x } : { axis: "y", value: exit.y };
+    return fromHorizontal ? { axis: "x", value: entry.x } : { axis: "y", value: entry.y };
   }
 
   function routeStubLength(a, fromDirection, b, toDirection) {
@@ -402,12 +407,12 @@
     const control = savedControl
       && savedControl.axis === initialControl.axis
       && Number.isFinite(savedControl.value)
-      ? { axis: savedControl.axis, value: snap(savedControl.value) }
+      ? { axis: savedControl.axis, value: snapRouteControl(savedControl.value) }
       : initialControl;
     const points = control.axis === "x"
       ? [a, exit, { x: control.value, y: exit.y }, { x: control.value, y: entry.y }, entry, b]
       : [a, exit, { x: exit.x, y: control.value }, { x: entry.x, y: control.value }, entry, b];
-    const junctionMidpoint = (start, end) => snap((start + end) / 2);
+    const junctionMidpoint = (start, end) => (start + end) / 2;
     const junction = control.axis === "x"
       ? { x: control.value, y: junctionMidpoint(exit.y, entry.y) }
       : { x: junctionMidpoint(exit.x, entry.x), y: control.value };
@@ -555,6 +560,9 @@
   }
 
   function replaceOutgoing(connection) {
+    if (connection.to) {
+      removeConnections((item) => item.from === connection.to && item.to === connection.from);
+    }
     const existing = state.connections.find((item) => item.from === connection.from && item.branch === connection.branch);
     if (existing) {
       const index = state.connections.indexOf(existing);
@@ -564,6 +572,12 @@
 
   function completeConnection(targetId, toSide) {
     if (!pendingConnection) return;
+    if (targetId === pendingConnection.from) {
+      pendingConnection = null;
+      toast("Um bloco não pode ser conectado a ele mesmo.");
+      render();
+      return;
+    }
     const target = state.blocks.find((block) => block.id === targetId);
     if (!target || target.type === "start") {
       toast("O bloco Início não pode receber conexões.");
@@ -759,7 +773,7 @@
         : row.path === "Falso"
           ? '<span class="decision-result false-result" aria-label="Falso">(F)</span>'
           : "";
-      return `<tr><td>${row.step}</td><td><div class="history-block-cell"><code>${escapeHtml(row.block)}</code>${decisionResult}</div></td>${values}</tr>`;
+      return `<tr><td>${row.step}</td><td><div class="history-block-cell"><code>${escapeHtml(displayCode(row.block))}</code>${decisionResult}</div></td>${values}</tr>`;
     }).join("");
     const wrap = $(".table-wrap");
     wrap.scrollTop = wrap.scrollHeight;
@@ -911,7 +925,7 @@
             id: connection.id || makeConnectionId(),
             fromSide: sides.includes(connection.fromSide) ? connection.fromSide : connection.branch === "true" ? "right" : connection.branch === "false" ? "left" : "bottom",
             ...(connection.to ? { toSide: sides.includes(connection.toSide) ? connection.toSide : "top" } : {}),
-            ...(connection.routeControl ? { routeControl: { axis: connection.routeControl.axis, value: snap(connection.routeControl.value) } } : {})
+            ...(connection.routeControl ? { routeControl: { axis: connection.routeControl.axis, value: snapRouteControl(connection.routeControl.value) } } : {})
           }))
         };
         selectedId = null;
@@ -953,6 +967,7 @@
   function escapeHtml(value) {
     return String(value).replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
   }
+  function displayCode(value) { return String(value).replaceAll("<-", "←"); }
   function formatNumber(value) { return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(8))); }
   function formatList(value, start = 0) {
     const entries = [];
@@ -1149,7 +1164,7 @@
     const localX = event.clientX - rect.left + canvas.scrollLeft;
     const localY = event.clientY - rect.top + canvas.scrollTop;
     const rawValue = routeDrag.axis === "x" ? localX : localY;
-    connection.routeControl = { axis: routeDrag.axis, value: snap(rawValue) };
+    connection.routeControl = { axis: routeDrag.axis, value: snapRouteControl(rawValue) };
     scheduleDrawConnections();
     event.preventDefault();
   });

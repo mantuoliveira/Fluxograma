@@ -108,6 +108,7 @@ body.resizing-history .app-shell { transition: none; }
 .file-actions { display: flex; gap: 4px; padding-right: 10px; border-right: 1px solid var(--line); }
 .file-actions .icon-button { width: 34px; min-height: 34px; background: #f7f9fa; font-size: 1rem; }
 .file-icon { width: 19px; height: 19px; display: block; margin: auto; fill: none; stroke: currentColor; stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; }
+.upload-icon { transform: rotate(180deg); }
 .canvas-actions { display: flex; gap: 7px; }
 .canvas { flex: 1; position: relative; overflow: auto; min-height: 0; background: #fbfcfd; touch-action: none; }
 .grid-dots { position: absolute; inset: 0; min-width: 100%; min-height: 100%; background-image: radial-gradient(#cdd5dc 1px, transparent 1px); background-size: var(--grid-size) var(--grid-size); pointer-events: none; }
