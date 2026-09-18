@@ -6,7 +6,7 @@
   <meta name="description" content="Editor didático de fluxogramas com execução passo a passo.">
   <title>Fluxo — Laboratório de Lógica</title>
   <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23192a3d'/%3E%3Ccircle cx='20' cy='18' r='7' fill='%235be0b1'/%3E%3Cpath d='M20 25v12h24M37 30l7 7-7 7' fill='none' stroke='%23fff' stroke-width='5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="styles.css?v=20260913-grid-invariant">
+  <link rel="stylesheet" href="styles.css?v=20260918-branch-labels-v10">
 </head>
 <body>
   <main class="app-shell">
@@ -18,23 +18,23 @@
       <div class="block-tools">
         <button class="tool-card" data-add="start" type="button">
           <span class="tool-symbol pill-symbol">INÍCIO</span>
-          <span><strong>Início</strong><small>Ponto de entrada</small></span>
+          <span><strong>Início</strong></span>
         </button>
         <button class="tool-card" data-add="assignment" type="button">
           <span class="tool-symbol rect-symbol">x←</span>
-          <span><strong>Ação</strong><small>Calcula e armazena</small></span>
+          <span><strong>Ação</strong></span>
         </button>
         <button class="tool-card" data-add="call" type="button">
           <span class="tool-symbol rect-symbol call-symbol" aria-hidden="true"></span>
-          <span><strong>Chamada</strong><small>Executa outro fluxograma</small></span>
+          <span><strong>Chamada</strong></span>
         </button>
         <button class="tool-card" data-add="decision" type="button">
           <span class="tool-symbol diamond-symbol"><i>?</i></span>
-          <span><strong>Decisão</strong><small>Verdadeiro ou falso</small></span>
+          <span><strong>Decisão</strong></span>
         </button>
         <button class="tool-card" data-add="end" type="button">
           <span class="tool-symbol pill-symbol end-symbol">FIM</span>
-          <span><strong>Fim</strong><small>Encerra o fluxo</small></span>
+          <span><strong>Fim</strong></span>
         </button>
       </div>
     </aside>
@@ -53,7 +53,7 @@
             <input id="fileInput" type="file" accept="application/json,.json" hidden>
           </div>
           <div class="canvas-actions">
-            <button class="icon-button" id="deleteSelected" type="button" disabled aria-label="Excluir bloco selecionado" title="Excluir bloco selecionado">⌫</button>
+            <button class="icon-button" id="deleteSelected" type="button" disabled aria-label="Excluir item selecionado" title="Excluir item selecionado">⌫</button>
             <button class="button reset icon-action" id="resetRun" type="button" aria-label="Reiniciar execução" title="Reiniciar execução"><svg class="action-icon reset-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg></button>
             <button class="button step icon-action" id="stepRun" type="button" aria-label="Executar próximo passo" title="Executar próximo passo"><svg class="action-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m7 5 9 7-9 7V5ZM18 5v14"/></svg></button>
           </div>
@@ -70,7 +70,7 @@
       </div>
     </section>
 
-    <div class="history-resize" id="historyResize" role="separator" aria-label="Redimensionar histórico" aria-orientation="vertical" aria-valuemin="250" aria-valuemax="1200" aria-valuenow="330" tabindex="0" title="Arraste para redimensionar o histórico">
+    <div class="history-resize" id="historyResize" role="separator" aria-label="Redimensionar histórico" aria-orientation="vertical" aria-valuemin="250" aria-valuemax="1200" aria-valuenow="440" tabindex="0" title="Arraste para redimensionar o histórico">
       <span aria-hidden="true"></span>
     </div>
 
@@ -91,6 +91,6 @@
   </main>
 
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
-  <script src="app.js?v=20260913-grid-invariant"></script>
+  <script src="app.js?v=20260918-branch-labels-v10"></script>
 </body>
 </html>

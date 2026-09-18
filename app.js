@@ -10,7 +10,8 @@
   const historyResize = $("#historyResize");
   const typeNames = { start: "INÍCIO", assignment: "AÇÃO", call: "CHAMADA", decision: "DECISÃO", end: "FIM" };
   const defaults = { start: "INÍCIO", assignment: "x <- 0", call: "Subfluxo", decision: "x < 10", end: "FIM" };
-  const GRID_SIZE = 22;
+  const GRID_SIZE = Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--grid-size")) || 22;
+  document.documentElement.style.setProperty("--grid-offset", `${-GRID_SIZE / 2}px`);
   const sides = ["top", "right", "bottom", "left"];
   const sideNames = { top: "cima", right: "direita", bottom: "baixo", left: "esquerda" };
   const sideDirections = { top: { x: 0, y: -1 }, right: { x: 1, y: 0 }, bottom: { x: 0, y: 1 }, left: { x: -1, y: 0 } };
@@ -22,7 +23,6 @@
   let editingOriginal = "";
   let pendingConnection = null;
   let drag = null;
-  let routeDrag = null;
   let panelResize = null;
   let run = freshRun();
   let idCounter = 1;
@@ -53,15 +53,10 @@
     return Math.max(minimum, Math.round(value / GRID_SIZE) * GRID_SIZE);
   }
 
-  function snapRouteControl(value) {
-    const step = GRID_SIZE / 2;
-    return Math.max(0, Math.round(value / step) * step);
-  }
-
   function maximumHistoryWidth() {
     if (window.innerWidth <= 800) return Math.max(250, window.innerWidth - 20);
     const paletteCollapsed = appShell.classList.contains("palette-collapsed");
-    const paletteWidth = paletteCollapsed ? 0 : window.innerWidth <= 1050 ? 202 : 232;
+    const paletteWidth = paletteCollapsed ? 0 : window.innerWidth <= 1050 ? 244 : 276;
     const canvasMinimum = 500;
     const layoutSpacing = paletteCollapsed ? 60 : 72;
     return Math.max(250, window.innerWidth - paletteWidth - canvasMinimum - layoutSpacing);
@@ -123,12 +118,16 @@
     const longestLine = ["assignment", "decision"].includes(type) && hasContent
       ? Math.max(1, ...String(blockOrType.code).split(/\r?\n/).map((line) => line.length))
       : 1;
-    let columns = type === "assignment"
-      ? Math.max(8, Math.ceil((longestLine * 8 + 48) / GRID_SIZE))
-      : type === "decision" ? Math.max(8, Math.ceil((longestLine * 8 + 88) / GRID_SIZE)) : 8;
-    if (["assignment", "decision"].includes(type) && columns % 2) columns += 1;
-    let rows = type === "decision" ? 6 : type === "assignment" ? Math.max(4, lineCount + 2) : 4;
-    if (rows % 2) rows += 1;
+    const evenUnits = (units) => units % 2 ? units + 1 : units;
+    let columns = 8;
+    let rows = 4;
+    if (type === "assignment") {
+      columns = evenUnits(Math.max(10, Math.ceil((longestLine * 15 + 56) / GRID_SIZE)));
+      rows = evenUnits(Math.max(4, lineCount + 2));
+    } else if (type === "decision") {
+      columns = evenUnits(Math.max(10, Math.ceil((longestLine * 15 + 104) / GRID_SIZE)));
+      rows = 6;
+    }
     return { width: GRID_SIZE * columns, height: GRID_SIZE * rows };
   }
 
@@ -194,6 +193,12 @@
     selectedConnectionId = null;
     const block = state.blocks.find((item) => item.id === id);
     $("#deleteSelected").disabled = !block;
+  }
+
+  function selectConnection(id) {
+    selectedId = null;
+    selectedConnectionId = state.connections.some((connection) => connection.id === id) ? id : null;
+    $("#deleteSelected").disabled = !selectedConnectionId;
   }
 
   function validateBlockCode(block, value) {
@@ -332,16 +337,15 @@
   }
 
   function portPoint(block, side) {
-    const el = canvas.querySelector(`[data-id="${CSS.escape(block.id)}"]`);
-    if (!el) return { x: 0, y: 0 };
-    const canvasRect = canvas.getBoundingClientRect();
-    const rect = el.getBoundingClientRect();
-    const left = rect.left - canvasRect.left + canvas.scrollLeft;
-    const top = rect.top - canvasRect.top + canvas.scrollTop;
-    if (side === "top") return { x: left + rect.width / 2, y: top };
-    if (side === "right") return { x: left + rect.width, y: top + rect.height / 2 };
-    if (side === "left") return { x: left, y: top + rect.height / 2 };
-    return { x: left + rect.width / 2, y: top + rect.height };
+    const dimensions = blockDimensions(block);
+    const left = snap(block.x);
+    const top = snap(block.y);
+    const width = snap(dimensions.width);
+    const height = snap(dimensions.height);
+    if (side === "top") return { x: left + width / 2, y: top };
+    if (side === "right") return { x: left + width, y: top + height / 2 };
+    if (side === "left") return { x: left, y: top + height / 2 };
+    return { x: left + width / 2, y: top + height };
   }
 
   function connectionFromSide(connection, block) {
@@ -360,75 +364,116 @@
     });
   }
 
-  function defaultRouteControl(exit, fromDirection, entry, toDirection) {
-    const fromHorizontal = fromDirection.x !== 0;
-    const toHorizontal = toDirection.x !== 0;
-    const midpoint = (start, end) => snap((start + end) / 2);
-    if (fromHorizontal && toHorizontal) {
-      if (exit.y === entry.y) return { axis: "y", value: exit.y };
-      const sameDirection = fromDirection.x === toDirection.x;
-      const destinationIsAhead = (entry.x - exit.x) * fromDirection.x >= 0;
-      return {
-        axis: "x",
-        value: sameDirection
-          ? (fromDirection.x < 0 ? Math.min(exit.x, entry.x) : Math.max(exit.x, entry.x))
-          : destinationIsAhead ? midpoint(exit.x, entry.x) : exit.x
-      };
-    }
-    if (!fromHorizontal && !toHorizontal) {
-      if (exit.x === entry.x) return { axis: "x", value: exit.x };
-      const sameDirection = fromDirection.y === toDirection.y;
-      const destinationIsAhead = (entry.y - exit.y) * fromDirection.y >= 0;
-      return {
-        axis: "y",
-        value: sameDirection
-          ? (fromDirection.y < 0 ? Math.min(exit.y, entry.y) : Math.max(exit.y, entry.y))
-          : destinationIsAhead ? midpoint(exit.y, entry.y) : exit.y
-      };
-    }
-    return fromHorizontal ? { axis: "x", value: entry.x } : { axis: "y", value: entry.y };
-  }
-
-  function routeStubLength(a, fromDirection, b, toDirection) {
-    const portsFaceEachOther = fromDirection.x === -toDirection.x && fromDirection.y === -toDirection.y;
-    if (!portsFaceEachOther) return GRID_SIZE;
-    const availableDistance = (b.x - a.x) * fromDirection.x + (b.y - a.y) * fromDirection.y;
-    if (availableDistance <= 0) return GRID_SIZE;
-    return availableDistance >= GRID_SIZE * 2 ? GRID_SIZE : 0;
-  }
-
-  function orthogonalGeometry(a, fromSide, b, toSide, savedControl) {
+  function autoRoutePoints(a, fromSide, b, toSide) {
     const fromDirection = sideDirections[fromSide];
     const toDirection = sideDirections[toSide];
-    const stubLength = routeStubLength(a, fromDirection, b, toDirection);
-    const exit = { x: a.x + fromDirection.x * stubLength, y: a.y + fromDirection.y * stubLength };
-    const entry = { x: b.x + toDirection.x * stubLength, y: b.y + toDirection.y * stubLength };
-    const initialControl = defaultRouteControl(exit, fromDirection, entry, toDirection);
-    const control = savedControl
-      && savedControl.axis === initialControl.axis
-      && Number.isFinite(savedControl.value)
-      ? { axis: savedControl.axis, value: snapRouteControl(savedControl.value) }
-      : initialControl;
-    const points = control.axis === "x"
-      ? [a, exit, { x: control.value, y: exit.y }, { x: control.value, y: entry.y }, entry, b]
-      : [a, exit, { x: exit.x, y: control.value }, { x: entry.x, y: control.value }, entry, b];
-    const junctionMidpoint = (start, end) => (start + end) / 2;
-    const junction = control.axis === "x"
-      ? { x: control.value, y: junctionMidpoint(exit.y, entry.y) }
-      : { x: junctionMidpoint(exit.x, entry.x), y: control.value };
-    const cleanPoints = removeCollinearPoints(points);
-    return {
-      points: cleanPoints,
-      path: cleanPoints.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "),
-      junction,
-      control
-    };
+    const exit = { x: a.x + fromDirection.x * GRID_SIZE, y: a.y + fromDirection.y * GRID_SIZE };
+    const entry = { x: b.x + toDirection.x * GRID_SIZE, y: b.y + toDirection.y * GRID_SIZE };
+    const fromHorizontal = fromDirection.x !== 0;
+    const toHorizontal = toDirection.x !== 0;
+    const points = [a, exit];
+
+    if (fromHorizontal !== toHorizontal) {
+      points.push(fromHorizontal ? { x: entry.x, y: exit.y } : { x: exit.x, y: entry.y });
+    } else if (fromHorizontal) {
+      const portsFaceEachOther = fromDirection.x === -toDirection.x;
+      const destinationIsAhead = (entry.x - exit.x) * fromDirection.x >= 0;
+      const corridorX = portsFaceEachOther && destinationIsAhead
+        ? snap((exit.x + entry.x) / 2)
+        : fromDirection.x > 0
+          ? Math.max(exit.x, entry.x) + GRID_SIZE
+          : Math.max(0, Math.min(exit.x, entry.x) - GRID_SIZE);
+      points.push({ x: corridorX, y: exit.y }, { x: corridorX, y: entry.y });
+    } else {
+      const portsFaceEachOther = fromDirection.y === -toDirection.y;
+      const destinationIsAhead = (entry.y - exit.y) * fromDirection.y >= 0;
+      const corridorY = portsFaceEachOther && destinationIsAhead
+        ? snap((exit.y + entry.y) / 2)
+        : fromDirection.y > 0
+          ? Math.max(exit.y, entry.y) + GRID_SIZE
+          : Math.max(0, Math.min(exit.y, entry.y) - GRID_SIZE);
+      points.push({ x: exit.x, y: corridorY }, { x: entry.x, y: corridorY });
+    }
+
+    points.push(entry, b);
+    return removeCollinearPoints(points);
   }
 
-  function sideFacing(point, target) {
-    const dx = point.x - target.x;
-    const dy = point.y - target.y;
-    return Math.abs(dx) >= Math.abs(dy) ? (dx < 0 ? "left" : "right") : (dy < 0 ? "top" : "bottom");
+  function routeMidpoint(points) {
+    const segments = points.slice(1).map((point, index) => {
+      const start = points[index];
+      return { start, end: point, length: Math.hypot(point.x - start.x, point.y - start.y) };
+    });
+    const total = segments.reduce((sum, segment) => sum + segment.length, 0);
+    let remaining = total / 2;
+    for (const segment of segments) {
+      if (remaining <= segment.length && segment.length) {
+        const progress = remaining / segment.length;
+        return {
+          x: snap(segment.start.x + (segment.end.x - segment.start.x) * progress),
+          y: snap(segment.start.y + (segment.end.y - segment.start.y) * progress)
+        };
+      }
+      remaining -= segment.length;
+    }
+    const fallback = points[Math.max(0, points.length - 1)] || { x: 0, y: 0 };
+    return { x: snap(fallback.x), y: snap(fallback.y) };
+  }
+
+  function manualRoutePoints(a, fromSide, savedPoints, b = null, toSide = null) {
+    const fromDirection = sideDirections[fromSide];
+    const exit = {
+      x: a.x + fromDirection.x * GRID_SIZE,
+      y: a.y + fromDirection.y * GRID_SIZE
+    };
+    const points = [a, exit];
+    const appendPoint = (point) => {
+      const previous = points[points.length - 1];
+      if (previous.x !== point.x || previous.y !== point.y) points.push(point);
+    };
+    const appendOrthogonalLeg = (end, horizontalFirst) => {
+      const start = points[points.length - 1];
+      if (start.x !== end.x && start.y !== end.y) {
+        appendPoint(horizontalFirst ? { x: end.x, y: start.y } : { x: start.x, y: end.y });
+      }
+      appendPoint(end);
+    };
+    let horizontalFirst = ["top", "bottom"].includes(fromSide);
+    savedPoints.forEach((savedPoint) => {
+      const point = { x: snap(savedPoint.x), y: snap(savedPoint.y) };
+      appendOrthogonalLeg(point, horizontalFirst);
+      const end = points[points.length - 1];
+      const beforeEnd = points[points.length - 2];
+      const arrivedVertically = beforeEnd && beforeEnd.x === end.x;
+      horizontalFirst = arrivedVertically;
+    });
+    if (b) {
+      if (toSide) {
+        const toDirection = sideDirections[toSide];
+        const entry = {
+          x: b.x + toDirection.x * GRID_SIZE,
+          y: b.y + toDirection.y * GRID_SIZE
+        };
+        const finalHorizontalFirst = ["left", "right"].includes(toSide);
+        appendOrthogonalLeg(entry, finalHorizontalFirst);
+        appendPoint(b);
+      } else {
+        appendOrthogonalLeg(b, horizontalFirst);
+      }
+    }
+    return removeCollinearPoints(points);
+  }
+
+  function connectionPathGeometry(a, fromSide, b, toSide, savedPoints) {
+    const points = toSide && !savedPoints.length
+      ? autoRoutePoints(a, fromSide, b, toSide)
+      : manualRoutePoints(a, fromSide, savedPoints, b, toSide);
+    const midpoint = routeMidpoint(points);
+    return {
+      points,
+      path: points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "),
+      junction: midpoint
+    };
   }
 
   function connectionGeometry(connection, cache, visiting = new Set()) {
@@ -447,14 +492,14 @@
       const targetGeometry = target ? connectionGeometry(target, cache, visiting) : null;
       if (!targetGeometry) return null;
       b = targetGeometry.junction;
-      toSide = sideFacing(a, b);
+      toSide = null;
     } else {
       const to = state.blocks.find((block) => block.id === connection.to);
       if (!to) return null;
       toSide = sides.includes(connection.toSide) ? connection.toSide : "top";
       b = portPoint(to, toSide);
     }
-    const geometry = orthogonalGeometry(a, fromSide, b, toSide, connection.routeControl);
+    const geometry = connectionPathGeometry(a, fromSide, b, toSide, connection.routePoints);
     cache.set(connection.id, geometry);
     visiting.delete(connection.id);
     return geometry;
@@ -462,8 +507,18 @@
 
   function drawConnections() {
     const blockElements = [...canvas.querySelectorAll(".flow-block")];
-    const contentWidth = blockElements.reduce((maximum, block) => Math.max(maximum, block.offsetLeft + block.offsetWidth + GRID_SIZE * 2), 0);
-    const contentHeight = blockElements.reduce((maximum, block) => Math.max(maximum, block.offsetTop + block.offsetHeight + GRID_SIZE * 2), 0);
+    const routedPoints = state.connections.flatMap((connection) => Array.isArray(connection.routePoints) ? connection.routePoints : []);
+    if (pendingConnection?.routePoints) routedPoints.push(...pendingConnection.routePoints);
+    const contentWidth = Math.max(
+      blockElements.reduce((maximum, block) => Math.max(maximum, block.offsetLeft + block.offsetWidth + GRID_SIZE * 2), 0),
+      ...routedPoints.map((point) => point.x + GRID_SIZE * 2),
+      0
+    );
+    const contentHeight = Math.max(
+      blockElements.reduce((maximum, block) => Math.max(maximum, block.offsetTop + block.offsetHeight + GRID_SIZE * 2), 0),
+      ...routedPoints.map((point) => point.y + GRID_SIZE * 2),
+      0
+    );
     const width = Math.max(canvas.clientWidth, contentWidth);
     const height = Math.max(canvas.clientHeight, contentHeight);
     svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
@@ -471,8 +526,8 @@
     svg.setAttribute("height", height);
     svg.style.width = `${width}px`;
     svg.style.height = `${height}px`;
-    svg.innerHTML = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8a98a5"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0f7b62"/></marker></defs>`;
-    canvas.querySelectorAll(".connection-junction").forEach((node) => node.remove());
+    svg.innerHTML = `<defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#8a98a5"/></marker><marker id="arrow-active" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#0f7b62"/></marker><marker id="arrow-pending" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#5278ee"/></marker></defs>`;
+    canvas.querySelectorAll(".connection-junction, .pending-route-tip").forEach((node) => node.remove());
     const geometries = new Map();
     state.connections.forEach((connection) => connectionGeometry(connection, geometries));
     state.connections.forEach((connection) => {
@@ -496,15 +551,37 @@
       if (!geometry) return;
       const junction = document.createElement("button");
       junction.type = "button";
-      junction.className = `connection-junction${selectedConnectionId === connection.id ? " selected" : ""}${routeDrag?.connectionId === connection.id ? " dragging" : ""}`;
+      junction.className = "connection-junction";
       junction.dataset.connectionId = connection.id;
-      junction.dataset.controlAxis = geometry.control.axis;
       junction.style.left = `${geometry.junction.x}px`;
       junction.style.top = `${geometry.junction.y}px`;
-      junction.setAttribute("aria-label", "Controle da seta; arraste para ajustar ou use como junção");
-      junction.title = "Arraste para ajustar a seta";
+      junction.setAttribute("aria-label", "Conectar a esta seta");
+      junction.title = "Conectar a esta seta";
       canvas.appendChild(junction);
     });
+
+    if (pendingConnection?.routePoints?.length) {
+      const from = state.blocks.find((block) => block.id === pendingConnection.from);
+      if (from) {
+        const start = portPoint(from, connectionFromSide(pendingConnection, from));
+        const points = manualRoutePoints(start, connectionFromSide(pendingConnection, from), pendingConnection.routePoints);
+        const pendingPath = document.createElementNS("http://www.w3.org/2000/svg", "path");
+        pendingPath.setAttribute("d", points.map((point, index) => `${index ? "L" : "M"} ${point.x} ${point.y}`).join(" "));
+        pendingPath.setAttribute("class", "pending-connection-path");
+        pendingPath.setAttribute("marker-end", "url(#arrow-pending)");
+        svg.appendChild(pendingPath);
+
+        const tipPoint = pendingConnection.routePoints[pendingConnection.routePoints.length - 1];
+        const tip = document.createElement("button");
+        tip.type = "button";
+        tip.className = "pending-route-tip";
+        tip.style.left = `${tipPoint.x}px`;
+        tip.style.top = `${tipPoint.y}px`;
+        tip.setAttribute("aria-label", "Ponta da seta em construção");
+        tip.title = "Clique na grade para continuar ou em uma porta para concluir";
+        canvas.appendChild(tip);
+      }
+    }
   }
 
   function beginConnection(id, branch, side, port) {
@@ -517,11 +594,32 @@
       showBranchPicker(block, side, port);
       return;
     }
+    selectedId = null;
     selectedConnectionId = null;
-    pendingConnection = { from: id, branch: branch || "next", fromSide: side };
+    $("#deleteSelected").disabled = true;
+    pendingConnection = { from: id, branch: branch || "next", fromSide: side, routePoints: [] };
     canvas.classList.add("connecting");
     document.querySelectorAll(".port.connecting").forEach((item) => item.classList.remove("connecting"));
     port.classList.add("connecting");
+    toast("Clique na grade para traçar a seta ou em uma porta para conectar diretamente.");
+  }
+
+  function addPendingRoutePoint(clientX, clientY) {
+    if (!pendingConnection) return;
+    if (pendingConnection.routePoints.length >= 100) {
+      toast("A rota já atingiu o limite de 100 pontos.");
+      return;
+    }
+    const rect = canvas.getBoundingClientRect();
+    const point = {
+      x: snap(clientX - rect.left + canvas.scrollLeft),
+      y: snap(clientY - rect.top + canvas.scrollTop)
+    };
+    const previous = pendingConnection.routePoints[pendingConnection.routePoints.length - 1];
+    if (previous && previous.x === point.x && previous.y === point.y) return;
+    pendingConnection.routePoints.push(point);
+    scheduleDrawConnections();
+    toast("Seta em construção: clique em outro ponto da grade ou em uma porta para concluir.");
   }
 
   function showBranchPicker(block, side, port) {
@@ -600,6 +698,16 @@
   }
 
   function removeSelected() {
+    if (selectedConnectionId) {
+      const connectionId = selectedConnectionId;
+      removeConnections((connection) => connection.id === connectionId);
+      selectedConnectionId = null;
+      resetExecution(false);
+      $("#deleteSelected").disabled = true;
+      render();
+      toast("Seta excluída.");
+      return;
+    }
     if (!selectedId) return;
     state.blocks = state.blocks.filter((block) => block.id !== selectedId);
     removeConnections((connection) => connection.from === selectedId || connection.to === selectedId);
@@ -896,7 +1004,7 @@
 
   function saveJson() {
     const blocks = state.blocks.map(({ layoutWidth, layoutHeight, ...block }) => block);
-    const payload = JSON.stringify({ version: 5, title: "Fluxograma", blocks, connections: state.connections }, null, 2);
+    const payload = JSON.stringify({ version: 7, title: "Fluxograma", blocks, connections: state.connections }, null, 2);
     const blob = new Blob([payload], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -922,10 +1030,9 @@
           }),
           connections: data.connections.map((connection) => ({
             ...connection,
-            id: connection.id || makeConnectionId(),
+            routePoints: connection.routePoints.map((point) => ({ x: snap(point.x), y: snap(point.y) })),
             fromSide: sides.includes(connection.fromSide) ? connection.fromSide : connection.branch === "true" ? "right" : connection.branch === "false" ? "left" : "bottom",
-            ...(connection.to ? { toSide: sides.includes(connection.toSide) ? connection.toSide : "top" } : {}),
-            ...(connection.routeControl ? { routeControl: { axis: connection.routeControl.axis, value: snapRouteControl(connection.routeControl.value) } } : {})
+            ...(connection.to ? { toSide: sides.includes(connection.toSide) ? connection.toSide : "top" } : {})
           }))
         };
         selectedId = null;
@@ -939,7 +1046,7 @@
   }
 
   function validateFlow(data) {
-    if (!data || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) throw new Error("arquivo JSON incompatível.");
+    if (!data || data.version !== 7 || !Array.isArray(data.blocks) || !Array.isArray(data.connections)) throw new Error("arquivo JSON incompatível.");
     const ids = new Set();
     data.blocks.forEach((block) => {
       if (!block.id || ids.has(block.id) || !Object.hasOwn(typeNames, block.type) || typeof block.code !== "string" || !Number.isFinite(block.x) || !Number.isFinite(block.y)) throw new Error("há um bloco inválido.");
@@ -954,13 +1061,12 @@
     });
     data.connections.forEach((connection) => {
       const validTarget = connection.to ? ids.has(connection.to) : typeof connection.toConnection === "string" && connectionIds.has(connection.toConnection);
-      if (!ids.has(connection.from) || !validTarget || !["next", "true", "false"].includes(connection.branch)) throw new Error("há uma conexão inválida.");
+      const validRoute = Array.isArray(connection.routePoints)
+        && connection.routePoints.length <= 100
+        && connection.routePoints.every((point) => point && Number.isFinite(point.x) && Number.isFinite(point.y));
+      if (!connection.id || !ids.has(connection.from) || !validTarget || !validRoute || !["next", "true", "false"].includes(connection.branch)) throw new Error("há uma conexão inválida.");
       if (connection.fromSide !== undefined && !sides.includes(connection.fromSide)) throw new Error("há um lado de conexão inválido.");
       if (connection.toSide !== undefined && !sides.includes(connection.toSide)) throw new Error("há um lado de conexão inválido.");
-      if (connection.routeControl !== undefined
-        && (!connection.routeControl || !["x", "y"].includes(connection.routeControl.axis) || !Number.isFinite(connection.routeControl.value))) {
-        throw new Error("há um controle de seta inválido.");
-      }
     });
   }
 
@@ -1004,7 +1110,7 @@
     button.title = collapsed ? "Expandir blocos" : "Recolher blocos";
     scheduleDrawConnections();
     setTimeout(() => {
-      const currentWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--history-width")) || 330;
+      const currentWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--history-width")) || 440;
       setHistoryWidth(currentWidth, false);
       scheduleDrawConnections();
     }, 250);
@@ -1041,7 +1147,7 @@
     setHistoryWidth(currentWidth + (event.key === "ArrowLeft" ? 20 : -20), true);
     event.preventDefault();
   });
-  historyResize.addEventListener("dblclick", () => setHistoryWidth(330, true));
+  historyResize.addEventListener("dblclick", () => setHistoryWidth(440, true));
   $("#saveFlow").addEventListener("click", saveJson);
   $("#loadFlow").addEventListener("click", () => $("#fileInput").click());
   $("#fileInput").addEventListener("change", (event) => {
@@ -1067,20 +1173,24 @@
     const previousSide = block[key];
     if (block[otherKey] === newSide) block[otherKey] = previousSide;
     block[key] = newSide;
-    state.connections.filter((connection) => connection.from === block.id).forEach((connection) => { delete connection.routeControl; });
     resetExecution(false);
   }
 
   canvas.addEventListener("pointerdown", (event) => {
+    const pendingTip = event.target.closest(".pending-route-tip");
+    if (pendingTip) {
+      event.stopPropagation();
+      event.preventDefault();
+      toast("Clique no próximo ponto da grade ou em uma porta de destino.");
+      return;
+    }
     const connectionPath = event.target.closest(".connection-hit-path");
     if (connectionPath) {
       event.stopPropagation();
       event.preventDefault();
       if (!finishInlineEdit(false)) return;
       pendingConnection = null;
-      selectedId = null;
-      selectedConnectionId = connectionPath.dataset.connectionId;
-      $("#deleteSelected").disabled = true;
+      selectConnection(connectionPath.dataset.connectionId);
       scheduleDrawConnections();
       return;
     }
@@ -1090,14 +1200,9 @@
       if (pendingConnection) completeConnectionToConnection(junction.dataset.connectionId);
       else {
         const connection = state.connections.find((item) => item.id === junction.dataset.connectionId);
-        const axis = junction.dataset.controlAxis;
-        if (!connection || !["x", "y"].includes(axis)) return;
-        selectedId = null;
-        selectedConnectionId = connection.id;
-        $("#deleteSelected").disabled = true;
-        routeDrag = { connectionId: connection.id, pointerId: event.pointerId, axis };
-        document.body.classList.add("dragging-route");
-        event.preventDefault();
+        if (!connection) return;
+        selectConnection(connection.id);
+        scheduleDrawConnections();
       }
       return;
     }
@@ -1112,6 +1217,11 @@
     }
     if (!blockEl) {
       if (!finishInlineEdit(false)) return;
+      if (pendingConnection) {
+        addPendingRoutePoint(event.clientX, event.clientY);
+        event.preventDefault();
+        return;
+      }
       pendingConnection = null;
       selectBlock(null);
       render();
@@ -1156,42 +1266,7 @@
     if (!moved) startInlineEdit(id);
     else render();
   });
-  window.addEventListener("pointermove", (event) => {
-    if (!routeDrag || routeDrag.pointerId !== event.pointerId) return;
-    const connection = state.connections.find((item) => item.id === routeDrag.connectionId);
-    if (!connection) return;
-    const rect = canvas.getBoundingClientRect();
-    const localX = event.clientX - rect.left + canvas.scrollLeft;
-    const localY = event.clientY - rect.top + canvas.scrollTop;
-    const rawValue = routeDrag.axis === "x" ? localX : localY;
-    connection.routeControl = { axis: routeDrag.axis, value: snapRouteControl(rawValue) };
-    scheduleDrawConnections();
-    event.preventDefault();
-  });
-  function finishRouteDrag(event) {
-    if (!routeDrag || routeDrag.pointerId !== event.pointerId) return;
-    routeDrag = null;
-    document.body.classList.remove("dragging-route");
-    scheduleDrawConnections();
-  }
-  window.addEventListener("pointerup", finishRouteDrag);
-  window.addEventListener("pointercancel", finishRouteDrag);
   canvas.addEventListener("keydown", (event) => {
-    const junction = event.target.closest(".connection-junction");
-    if (junction && ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
-      const connection = state.connections.find((item) => item.id === junction.dataset.connectionId);
-      const geometry = connection ? connectionGeometry(connection, new Map()) : null;
-      const axis = geometry?.control.axis;
-      const delta = axis === "x"
-        ? (event.key === "ArrowLeft" ? -GRID_SIZE : event.key === "ArrowRight" ? GRID_SIZE : 0)
-        : (event.key === "ArrowUp" ? -GRID_SIZE : event.key === "ArrowDown" ? GRID_SIZE : 0);
-      if (connection && geometry && delta) {
-        connection.routeControl = { axis, value: geometry.control.value + delta };
-        event.preventDefault();
-        scheduleDrawConnections();
-      }
-      return;
-    }
     const editor = event.target.closest(".inline-editor");
     if (editor && event.key === "Enter" && !(editor.matches("textarea") && event.shiftKey)) {
       event.preventDefault();
@@ -1222,7 +1297,7 @@
     }, 0);
   });
   canvas.addEventListener("keydown", (event) => {
-    if ((event.key === "Delete" || event.key === "Backspace") && selectedId && !event.target.matches(".inline-editor")) { event.preventDefault(); removeSelected(); }
+    if ((event.key === "Delete" || event.key === "Backspace") && (selectedId || selectedConnectionId) && !event.target.matches(".inline-editor")) { event.preventDefault(); removeSelected(); }
   });
   document.addEventListener("keydown", (event) => {
     const target = event.target instanceof Element ? event.target : null;
@@ -1232,13 +1307,19 @@
       step();
       return;
     }
+    if (event.key === "Escape" && pendingConnection && !editingId) {
+      pendingConnection = null;
+      render();
+      toast("Construção da seta cancelada.");
+      return;
+    }
     if (event.key === "Escape" && (selectedId || selectedConnectionId) && !editingId) {
       selectBlock(null);
       render();
     }
   });
   window.addEventListener("resize", () => {
-    const currentWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--history-width")) || 330;
+    const currentWidth = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--history-width")) || 440;
     setHistoryWidth(currentWidth, false);
     scheduleDrawConnections();
   });
